@@ -7,3 +7,5 @@ In order to view the below files as rendered html, please click [here](https://o
 ## Key files
 
 [Selection Issue: ](covid/selection_issue.html) an investigation into the selection bias in the data sampling process.
+
+[Covid_report: ](covid/jg_covid_report_effective.html) starting to explore our dataset through visualization. 
