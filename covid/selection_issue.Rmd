@@ -1,0 +1,330 @@
+---
+title: 'JustGiving pre/post-covid comparison: selection problem and proposed solution'
+output:
+  html_document:
+    toc: true
+    #toc_float: true
+    df_print: kable
+  tufte::tufte_handout: default
+author: "Oska Fentem with Dr David Reinstein"
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(123)
+knitr::opts_chunk$set(echo = TRUE,
+                      message=FALSE,
+                      warning=FALSE)
+knitr::opts_chunk$set(cache.extra = knitr::rand_seed) # Reproducibility
+library(tufte)
+library(here)
+library(scales)
+library(kableExtra)
+library(tidyverse)
+library(stargazer)
+library(broom)
+
+margin_note <- purrr::partial(tufte::margin_note, icon="") # Remove toggle margin notes button
+
+```
+
+```{css, echo=FALSE, eval=knitr::is_html_output()}
+.main-container {
+    margin-left: 100px;       # 0px = max. to the left (with default padding)
+}
+
+#TOC {
+  z-index: 2;
+ }
+
+.sidenote, .marginnote {
+  max-width: 260px;
+  float: right;
+  clear: right;
+  margin-right: -30%;     # previously was set to -60%
+  width: 57%;
+  margin-top: 0;
+  margin-bottom: 0;
+  font-size: 1.1rem;
+  line-height: 1.3;
+  vertical-align: baseline;
+  position: relative;
+  }
+```
+
+```{r Data-Import, message=FALSE, echo=FALSE}
+# List of effective charities
+effective_chars <- readr::read_csv("https://raw.githubusercontent.com/daaronr/fundraising_data_pull/master/data/effective_charities.csv") %>% select(justgiving_id)
+
+# Reading in the data
+covid_eff <- readRDS(here("rds/fundraisers_w_don_info")) %>%
+  filter(charity_id %in% effective_chars$justgiving_id) # Filtering the data for effective charities
+```
+
+# Sample Selection bias
+
+We constructed our dataset in a particular way, through a series of 'API pulls from JustGiving'. The infrequency of our earlier pulls, and the fact that 'expired' pages are not visible, suggest that a standard unweighted 'differencing' may lead to a certain selection bias. However, we can eliminate this bias through the appropriate weighting.
+
+## Proposed Model
+
+$$
+Y_i = \alpha_i + \gamma D_i + \mathbf{x'_{i}}\beta + \epsilon_{it}
+$$
+
+We can use the Rubin causal framework in order to formalize our issue. For simplicity we pay no attention to the various stages of the pandemic (for example the UK has had various levels of lockdown) and simply consider our 'treatment' to be whether a page was created after (rather than before) the pandemic. Therefore we have a binary treatment, $D_i$:
+
+$$ \begin{aligned} D_{i}=\left\{\begin{array}{ll}
+1 & \text { the page } i \text { was created during the pandemic } \\
+0 & \text { the page } i \text { was not created during the pandemic }
+\end{array}\right.
+\end{aligned}
+$$
+
+Our outcome variable ($Y_i$) is the total amount raised by a fundraiser. Due to the binary nature of our treatment we have two potential outcomes for each unit:
+
+$$ \begin{aligned}
+Y_i = \left\{\begin{array}{ll}
+Y_i(1) & \text{if } D_i = 1 \\
+Y_i(0) & \text{if } D_i = 0
+\end{array}\right.
+\end{aligned}$$
+
+We seek to estimate an ATE, $E[Y_i(1) - Y_i(0)]$.
+
+### Selection Mechanism {.tabset .tabset-fade}
+
+JustGiving fundraising pages have an expiry date: this implies that the amount of time in which a page can receive donations is finite. The duration between a page's creation and it's expiry, $l_i$ (the 'time length' of page $i$), varies across pages.
+
+When pulling fundraising data from the JustGiving API we are pulling **active** fundraising pages. Expired pages are not included in our sample. While there are some rules governing how [expiry dates are set](https://help.justgiving.com/hc/en-us/articles/200669611-How-do-I-extend-my-fundraising-page-#:~:text=All%20JustGiving%20pages%20have%20an,the%20event%20has%20taken%20place.), they vary widely in our data. Only pages with durations 'long enough' that they last until our data pull will show up in our sample. We did fewer data pulls in the earlier part of our sample; thus, our *earlier samples tend to contain a greater share of pages with longer lifetimes*.
+
+The mechanism guiding this is simple. If we define:
+
+-   $z_1$ as the date that a page was created
+
+-   $z_2$ as the date that a page expires (this means that it is removed from the JustGiving servers)
+
+We can thus consider that pages in our sample are selected, $s_i$, if they were active on a date when data was pulled, $p_i$ . Thus
+
+$$\begin{aligned}
+s_i = \left\{\begin{array}{ll}
+1 & \text{if } p_i \in [z_1, z_2] \\
+0 & \text{otherwise}
+\end{array}\right.
+\end{aligned}$$
+
+By this mechanism we can then define the duration, or length, of a page as $l_i = z_2 - z_1$. For our selection equation this means that we can think of $s_i$ as being determined by a function of duration, $f(l_i)$. As a wider interval $[z_1, z_2]$ would increase the probability of observing a page it must be so that pages with larger durations are more likely to be observed in our sample. Therefore, the probability of an observation entering our earlier sample depends on $l_i$, $P(S_i = 1) = f(l_i)$.
+
+Our outcome variable is the total raised by a fundraiser, $Y_i$. For now we can naively assume that it is determined by the following equation:
+
+$$
+Y_i = \beta\mathbf{x'_{i}} + u_i
+$$
+
+Where $\mathbf{x'_{i}}$ is a vector of explanatory variables, including the treatment variable $D_i$. For simplicity we ignore that $l_i$ may enter $\mathbf{x'_{i}}$ Where selection into our sample is governed by:
+
+$$\begin{aligned}
+s_i = \left\{\begin{array}{ll}
+1 & \text{if }z_1 + l_i \geq z_2 \\
+0 & \text{otherwise}
+\end{array}\right.
+\end{aligned}$$
+
+As argued above we can replace this with an increasing function of $l_i$
+
+$$\begin{aligned}
+s_i = \left\{\begin{array}{ll}
+1 & \text{if }f(l_i) + r \geq 0\\
+0 & \text{if } f(l_i) + r < 0
+\end{array}\right.
+\end{aligned}$$
+
+Where $r$ is an unobserved variable. By using only selected samples the estimation of our outcome variable equation becomes:
+
+$$
+\begin{aligned}
+E[Y_i|s_i = 1] &= \beta\mathbf{x'_{i}} + E[u_i|s_i=1] \\
+&= \beta\mathbf{x'_{i}} + E[u_i|l_i, r]
+\end{aligned}
+$$
+
+We see that this will provide an unbiased estimate in the case where $E[u_i|l_i, r] = E[u_i] = 0$. This creates an issue for our inference; durations are selected by the fundraisers, and these are likely to have a relationship to amounts raised. E.g., better-planned fundraisers, and fundraisers tied to larger events, may tend to be set up further in advance of these events. It is likely the case that $E[u_i|l_i, r] \neq E[u_i]$ so that estimates of our model coefficients will be biased.
+
+
+The difference in the page durations is apparent in our data. We also see that page durations appear to be clustered around the 1700-1800 day range. As this corresponds to a roughly 5 year duration, this inflated count could potentially stem from a system default. For those pages which raise funds for projects which lack a physical event setting an expiry 5 years into the future could result from a heuristic.
+
+#### Density
+
+```{r, KDensity, echo=FALSE, warning=FALSE}
+covid_eff %>%
+  mutate(prior_2020 = as.factor(if_else(first_downloaded >= "2020-01-01",
+                                        "Pulled during or after 2020",
+                                        "Pulled prior to 2020"))) %>%
+  ggplot(aes(expiry_dur, colour=prior_2020, fill=prior_2020)) +
+  geom_density(alpha=.3) +
+  scale_y_continuous(labels = percent_format()) +
+  ggtitle("Distribution of page duration") + 
+  ylab("") + xlab("") + labs(fill =" ")  + guides(colour=FALSE)
+
+```
+
+#### Histogram
+
+```{r Hist, warning=FALSE, echo=FALSE}
+covid_eff %>%
+  mutate(prior_2020 = as.factor(if_else(first_downloaded >= "2020-01-01",
+                                        "Pulled during or after 2020",
+                                        "Pulled prior to 2020"))) %>%
+  ggplot(aes(expiry_dur)) +
+  geom_histogram(bins = 50, aes(y = ..density..)) +
+  facet_wrap(~ prior_2020) + ylab("") + xlab("") +
+  scale_y_continuous(labels = percent_format()) +
+  ggtitle("Distribution of page duration")
+```
+
+</div>
+
+For a more formal confirmation of this we can use a Kruskal-Wallis, a non-parametric hypothesis test. If we make the assumption that the distributions of page duration for the pre-Covid and post-Covid groups are identically shaped then this statistic can be used to test for a difference between medians of the two groups.
+
+Here the null hypothesis, $H_0$, states that the medians are equal across the groups.
+
+```{r, echo=FALSE}
+kruskal.test(expiry_dur~prior_2020, data = covid_eff)
+```
+
+We reject the null that the two distributions have equal medians.
+
+```{r, echo=FALSE}
+covid_eff %>% filter(prior_2020 != "Pulled prior to 2020") %>%
+  select(expiry_dur, total_raised) %>%
+  mutate_all(~log2(. + 1)) %>% # Total raised contains many 0's
+  ggplot(aes(x=expiry_dur, y=total_raised)) +
+  geom_point(size=.1) +
+  xlab("Page duration (Log Scale)") +
+  ylab("Total raised (£)  (Log scale)") +
+  geom_smooth(method="lm", formula= y~x)
+```
+
+Whilst this linear line is clearly not a good fit for our data, it does indicate the positive relationship mentioned. As pages in our earlier samples have higher values of $l_i$, this means that it is unlikely that our earlier sample is representative of the true population.
+
+## Weighting Procedure
+
+Our sample of fundraisers is made up of data pulls from early 2018 to `r Sys.Date()`. The earlier data pulls were conducted less frequently as the process was done manually. This process has now been updated and data pulls are done automatically each day. `r margin_note("For those interested, the process is done automatically using a server running R. The package Git2r has been used to automate the process of pulling in the data and pushing to a Github repo")`
+
+Due to this we can consider our sample as being made up of two sub-samples
+
+1.  $T_2$: A later sample which is a random draw from the *true* population
+2.  $T_1$: Our earlier $T_1$ sample is censored, with the censoring probability depending on a page's duration, as specified in the above selection equation.
+
+Due to the differences between these samples, estimated effects from comparing the treatment and control groups would be biased as the distributions of covariates are different due to sampling.
+
+In order to correct for these differences we can make use of inverse probability weighting. The idea behind this method is to create a *pseudo-population* which corrects for the selection bias. This should allow us to balance observable characteristics which in theory should lead to a better estimate of the treatment effect.
+
+We assume our valid sample is a sample from the true population. There is a difference in the observable characteristic $l_i$ between our control and treatment group. We can use the distribution of $l_i$ in our treatment group in order to weight samples in our control group. This weighted sample should allow us to estimate an ATE.
+
+## Simulating bias from selection and endogeneity
+
+If we assume a simple functional form for the relationships between our variables. We want to estimate a regression with the following quantities:
+
+-   $Y_i$: the total amount that a fundraiser raised
+-   $l_i$: the duration (length) of a fundraising page
+-   $d_i$: a binary indicator equal to 1 if the page was created during the pandemic
+-   $s_i$: a binary indicator equal to 1 if the page was observed
+
+We can consider that relationship between $l_i$ and $Y_i$ if as follows:
+
+$$\begin{array}{c}
+e_{1} \sim N(0,1) \\
+e_{2} \sim N(0,1) \\
+u_{1} \sim N(0,1) \\
+l_{i}=0.4 u_{1}+0.1 e_{1} \\
+Y_{i}=2 l_{i}+d_{i}+0.1 u_{1}+e_{2}
+\end{array}
+$$
+
+For now we assume that the relationship between these variables is linear: $$Y_i = \beta_0 + \beta_1 d_i + \beta_2 l_i + \epsilon_i$$ We are interested in obtaining $\beta_1$
+
+We assume that our variables are generated as follows
+
+```{r Stats-Packages, include=FALSE}
+library(MASS)
+library(stats)
+library(latex2exp)
+library(WeightIt)
+library(jtools)
+set.seed(123)
+```
+
+```{r GenData}
+n <- 100000
+
+u1 <- rnorm(n)
+u2 <- rnorm(n)
+e1 <- rnorm(n)
+e2 <- rnorm(n)
+
+covid <- c(rep("pre-covid", n/2), rep("post-covid", n/2))
+
+dur <- .5*u1 + 0.1*e1
+
+total = 0.5*(covid=="pre-covid") + u1 + 0.1*e2
+
+sel_con <- rbinom(n/2, 1, prob=pnorm(q=dur)) # Whether an observation is selected in our control group is a binomial variable where the probability is given by the cdf of duration 
+
+selection <- c(sel_con, rep(1, n/2))
+
+data <- tibble(covid, selection, dur, total)
+
+```
+
+```{r Regs}
+model_names <- c("Full Population", "Selected Sample", "Ideal Weighting")
+# True population
+reg_pop <- data %>% lm(total ~ covid, data=.)
+
+# Sample selection bias
+reg_bias <- data %>% filter(selection==1) %>%
+  lm(total ~ covid, data=.)
+
+# Hypothetical model where we know which observations are selected
+logit <- glm(selection ~ dur + covid, data = data,family=binomial(link="logit"))
+
+ipw_con <- 1 - pnorm(dur[c(data$selection==1 & data$covid=="pre-covid")])
+
+ipw <- c(ipw_con, data$selection[data$covid=="post-covid"])
+
+reg_sel_t <- data %>% filter(selection==1) %>% # Regression with estimate of true selection
+  lm(total ~ covid, data=., weights=ipw)
+```
+
+```{r, echo=FALSE}
+export_summs(reg_pop, reg_bias, reg_sel_t, scale=TRUE,
+             error_format = "[{conf.low}, {conf.high}]",
+             model.names = model_names)
+```   
+
+```{r}
+data %>% filter(selection==1) %>%
+  ggplot(aes(dur, colour=covid, fill=covid)) + ylab("") + xlab("Page Durations") +
+  geom_density(alpha=.3) 
+```
+
+As our post-Covid sample contains draws from the *true* distribution we can match the distribution of durations to the pre-Covid sample. This should remove the association between the missingness from duration and $Y_i$. 
+```{r}
+# Approximate using observed (selected) data
+data_sam <- data %>% filter(selection==1)
+
+w <- weightit(as.numeric(covid=="pre-covid") ~ dur, data=data_sam, method="entropy") # Note here that we use pre-covid period as the treatment group when weighting, this is because it is our control group exhibits selection bias
+#DR -- explain this a bit better?
+
+reg_sel_s <- data_sam %>%
+  lm(total ~ covid, data=., weights=w$weights)
+```
+
+```{r Compare-Regs, echo=FALSE}
+model_names[4] <- "Entropy Weighting"
+
+export_summs(reg_pop, reg_bias, reg_sel_t, reg_sel_s, scale=TRUE,
+             error_format = "[{conf.low}, {conf.high}]",
+             model.names=model_names)
+```
+
+We see that entropy weighting results in the true coefficient for $D_i$. Whilst there is some bias in the intercept, the confidence intervals on $D_i$ are actually tighter than with the optimal weighting procedure. 
