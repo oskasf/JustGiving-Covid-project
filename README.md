@@ -2,7 +2,7 @@
 
 A preliminary exploration of future analysis on investigating the impact of Covid-19 on behaviour on JustGiving. The files contained in this repo are originally from another (private) repo, hence the small number of commits.
 
-In order to view the below files as rendered html, please click [here](https://oskasf.github.io/JustGiving-Covid-project/)
+**In order to view the below files as rendered html, please click [here](https://oskasf.github.io/JustGiving-Covid-project/)**
 
 ## Key files
 
