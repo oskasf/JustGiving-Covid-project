@@ -1,0 +1,472 @@
+---
+title: "Report on JustGiving in the wake of the Covid-19 pandemic"
+output:
+  html_document:
+    df_print: kable
+---
+# Report on JustGiving in the wake of the Covid-19 pandemic {#jg_covid_eff}
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE, messages = FALSE, 
+                      fig.align = 'center',
+                      out.width='80%')
+options(knitr.table.format = "html")
+options(dplyr.summarise.inform = FALSE)
+options(scipen = 999)
+theme_update(legend.position="bottom") # Moving GGplot legends to bottom
+
+library(pacman)
+
+# Load packages
+p_load(GGally,Hmisc,broom,codebook, corx,data.table,dataMaid,devtools,dplyr,glue,gtools,here,hrbrthemes,janitor,kableExtra,knitr,lubridate,magrittr,pastecs,plyr,purrr, pryr, readr,scales,sjlabelled,
+       snakecase,summarytools,tictoc,tidyr,tidyverse,todor,xtable)
+
+#Set function defaults
+here <- here::here
+where <- pryr::where
+```
+
+<!-- Auto equation numbering for when knitting file individually -->
+
+```{=html}
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+```
+
+Our dataset contains information on JustGiving fundraising pages for *effective* charities. This data has been collated using multiple data pulls from the JustGiving API. These data pulls have been conducted at various intervals since early 2018. The aim of this project is to quantify the impact of the Covid-19 pandemic on donating and fundraising behaviour on the JustGiving website. This will be done by analysing the effect of Covid-19 on the total raised by a fundraising page, $Y_i$.\
+The list of *effective* charities in this dataset have been collated from ... Data has been collected on the following charities over the past several years:
+
+```{r}
+covid_eff %>% group_by(charity_name) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) %>%
+  kable(caption = "List of Effective charities",col.names = c("Charity Name", "Observations")) %>%
+  kable_styling() %>%
+  scroll_box(height = "200px")
+```
+
+From these charities various data has been collected. Feature extraction has been performed to give insightful statistics about fundraisers and donations. Our dataset contains information on `r ncol(covid_eff)` variables. The descriptions of these variables are given below.
+
+```{r}
+tibble("names" = names(covid_eff), 'labels' = matrix(lapply(covid_eff, get_label))) %>%
+  kable(caption = " Variable descriptions", col.names = c("", "")) %>%
+  kable_styling() %>% 
+  scroll_box(height = "400px")
+```
+
+We will start off by exploring our data visually. This should give us an insight into how fundraiser creation has been affected by the Covid-19 pandemic. In particular it may be interesting to see whether measures taken to stop the spread of Coronavirus in the UK, such as the national and local lockdown, have had an impact on fundraising behaviour. It is important to explain the timeline of the Coronavirus pandemic in the UK as the key dates will be used in this document.
+
+- 24th March: The UK enters national lockdown (source: @CoronavirusStrictNew2020)
+- 1st June: Lockdown measures in the UK are eased ([source](https://www.independent.co.uk/news/uk/home-news/coronavirus-uk-timeline-lockdown-boris-johnson-pubs-test-and-trace-vaccine-b547630.html))
+- 5th November: The UK enters a second national lockdown
+
+```{r}
+# Defining date intervals
+lockdown_1 <- c(dmy("24/03/2020"), dmy("01/07/2020"))
+lockdown_2 <- c(dmy("05/11/2020"), dmy("02/12/2020"))
+
+# Lockdown dataframe
+lockdown <- data.frame(start=c(lockdown_1[1], lockdown_2[1]), end=c(lockdown_1[2], lockdown_2[2]))
+
+# ggplot object to add to graphs
+covid_dates <- list(geom_rect(data=lockdown, inherit.aes=FALSE, aes(xmin=start, xmax=end, ymin=0, ymax=1000), color="transparent", fill="orange", alpha=0.3))
+
+covid_dates_year <- list(geom_rect(data=lockdown, inherit.aes=FALSE, aes(xmin=start, xmax=end, ymin=0, ymax=Inf, fill="UK Lockdown"), color=NA, alpha=0.3), scale_fill_manual('',
+    values = 'orange', guide = guide_legend(override.aes = list(alpha = 0.3))))
+
+# same as above but for graphs where we don't plot year
+covid_months <- format(lockdown, format="%d/%m")
+
+covid_dates_month <- list(geom_rect(data=covid_months, inherit.aes=FALSE, 
+                             aes(xmin=start, xmax=end, ymin=0, ymax=Inf, fill="UK Lockdown"),
+                             color=NA, alpha=0.3), 
+                   scale_fill_manual('',
+                                     values = 'orange', 
+                                     guide = guide_legend(override.aes = list(alpha = 0.3))))
+
+# First pull
+first_pull <- list(geom_vline(xintercept = min((as.Date(covid_eff$date_downloaded))), linetype="dotted",colour="black",size=0.7), 
+                              geom_text(size = 3, aes(fontface=1, label="First pull",x=min(as.Date(covid_eff$date_downloaded)),y=0, vjust=-2)))
+```
+
+```{block2,  type='note'}
+Aside: a quick motivation for a popular audience
+
+How has covid affected fundraising and giving? Have people become more or less empathetic generous? Are they still willing to support causes that are not directly related to this crisis? Are fundraising events still being planned and taking place? How is it likely to change the future of this sector?
+
+```
+
+## Selection Issues
+
+Prior to 2020, data pulls were not carried out regularly. There were `r covid_eff %>% filter(date_downloaded < "2020-01-01") %>% select(date_downloaded) %>% n_distinct()` data pulls between 2018 and 2020. During 2020 alone there have `r covid_eff %>% filter(date_downloaded >= "2020-01-01") %>% select(date_downloaded) %>% n_distinct()` data pulls. Due to the particular nature of how our dataset has been constructed there are possible selection issues which may be present in our data. These issues will likely induce bias into any estimates of the average treatment effect (ATE).\
+
+Selection issues arise from the infrequent nature of earlier data pulls. JustGiving fundraising pages have an expiry date which means that the amount of time in which a page can receive donations is finite. The duration between a pages creation and it's expiry, $l_i$, varies across pages. When pulling fundraising data from the JustGiving API we are pulling active fundraising pages, therefore missing pages which have expired already. Whilst there are some rules governing how [expiry dates are set](https://help.justgiving.com/hc/en-us/articles/200669611-How-do-I-extend-my-fundraising-page-#:~:text=All%20JustGiving%20pages%20have%20an,the%20event%20has%20taken%20place.), expiry dates vary gratuitously in our data. This means that our earlier samples should contain pages which have longer lifetimes and this is apparent in our data.\
+
+This creates an issue for our inference due to the link between $l_i$ and $Y_i$ (pages which are around for longer should in theory, raise more money). As pages in our earlier samples have higher values of $l_i$, this means that our sample is likely not representative of the wider population. For our earlier sample it is likely that $$E(Y_i|S_i = 1) \ne E(Y_i)$$ Where $S_i = 1$ if a page is selected and $S_i = 0$ otherwise.\
+The selection mechanism for our sample is as follows $$S_i = 1 \quad if \space expiry \space date < \space API \space pull \space date$$
+
+Therefore, the probability of an observation entering our sample depends on the variable $l_i$, $P(S_i = 1) = f(l_i)$
+
+```{r Applying first pass filter eff}
+covid_eff_filter <- covid_eff %>%
+  filter(created_date >= (seq.Date(as.Date(min(fdd_fd$date_downloaded)), length = 2, by = "-6 months")[2]) & expiry_dur >= 180)
+#Move this to bottom
+```
+
+We have a variable *expiry_dur* which measures the number of days between a page first being created and when it will expire. Below we will investigate how this variable is distributed.
+
+```{r covid-eff}
+covid_eff %>% select(expiry_dur) %>%
+  ggplot(aes(expiry_dur)) +
+  geom_histogram(bins = 50, aes(y = ..density..)) +
+  ggtitle("Expiry duration Distribution") +
+  xlab("The number of days between the creation of a fundraiser and the date when the page expires.") +
+  ylab("")  +
+  scale_y_continuous(labels = percent_format())
+```
+
+\
+Our selection issue comes from the variation in `expiry_dur` between the earlier and later pulls as this variable should have an effect on total raised. This variation between the earlier and later data is illustrated below.
+
+```{r, warning=FALSE}
+covid_eff %>% 
+  mutate(prior_2020 = as.factor(if_else(first_downloaded >= "2020-01-01", 
+                                        "Pulled during 2020", 
+                                        "Pulled prior to 2020"))) %>%
+  ggplot(aes(expiry_dur)) +
+  geom_histogram(bins = 50, aes(y = ..density..)) +
+  facet_wrap(~ prior_2020) + ylab("") + xlab("") +
+  scale_y_continuous(labels = percent_format())
+```
+
+We see that a larger proportion of the pages pulled prior to 2020 had longer expiry dates. We can perform a Kruskal-Wallis test to check whether the groups come from identical distributions. It must be noted that our groups are not defined exactly as it is not clear where data pulls became more frequent.
+
+```{r}
+#Comparing means of expiry_dur between groups
+kruskal.test(expiry_dur~prior_2020, data = covid_eff)
+#The null hypothesis of the Kruskal–Wallis test is that the mean ranks of the groups are the same. A low P-value says we fail to accept the null
+```
+
+The null hypothesis in this test is that there are no differences in the means of the `expiry_dur` between the pages pulled in 2020 and those pulled prior to 2020. We reject the null hypothesis that there is no difference in means between the groups at the 1% level. <!-- Account for outliers in the above graphs (need to change bin widths) -->
+
+### Missing values
+
+```{r find-missings}
+covid_eff %>%
+    is.na() %>%
+    reshape2::melt() %>%
+    ggplot(aes(Var2, Var1, fill=value)) + 
+    geom_raster() +
+    coord_flip() +
+    scale_y_continuous(NULL, expand = c(0, 0)) +
+    scale_fill_grey(name = "", 
+                    labels = c("Present", 
+                               "Missing")) +
+    xlab("Observation") +
+    theme(axis.text.y  = element_text(size = 4))
+#Source: https://bradleyboehmke.github.io/HOML/engineering.html#dealing-with-missingness
+```
+
+There are a high number of missing values for our duration variables. This is not surprising as `r sum(covid_eff$sum_don == 0)` pages did not receive any donations therefore meaning that statistics such as *"`r sjlabelled::get_label(covid_eff$dur_edate)[1]`"* do not exist.
+
+### Date distributions
+
+```{r data-dist, message=FALSE, warning = FALSE}
+covid_eff %>% select_if(~is.POSIXct(.)) %>%
+  mutate_all(lubridate::ymd_hms) %>%
+  mutate_all(as.Date) %>%
+  gather() %>%
+  ggplot(aes(value)) +
+  facet_wrap(~ key, labeller = graph_labeller, scales = "free") +
+  geom_histogram(bins = 30) +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
+  scale_x_date(date_labels = ("%Y"))
+```
+
+We see that the majority of the observations come from the most recent data pull. This makes sense as we have filtered our fundraiser data in order to ensure that we have the most recent data on each fundraiser and therefore earlier redundant data is removed.
+
+The first datasets were pulled from the API in 2018 which may explain the low number of fundraisers being created prior to 2016 as only active pages are pulled from the API.
+
+### Donation Summary Statistics
+
+```{r}
+covid_eff %>% select(contains("_don")) %>%
+  gather() %>%
+  ggplot(aes(value)) +
+  facet_wrap(~ key, labeller = graph_labeller, scales = "free") +
+  geom_histogram(bins=30) + xlab("") + ylab("")
+```
+We see from our plots that our data is heavily impacted by outliers. In order to create plots that are easier to interpret we can attempt to remove the outliers which are present. For simiplicity, we will remove values in each column which are over the 99% percentile (in said column) with the value `NA`.
+
+```{r}
+covid_eff %>% select(contains("_don")) %>%
+  mutate_each(funs(replace(., . > quantile(., 0.99,na.rm=TRUE), NA))) %>%
+  gather() %>%
+  ggplot(aes(value)) +
+  facet_wrap(~ key, labeller = graph_labeller, scales = "free") +
+  geom_histogram(bins=30) +xlab("") + ylab("")
+```
+
+
+
+## What has fundraiser page creation been like over the past few years? {.unnumbered}
+
+We can use our data to sum the total number of fundraisers created in each month. This data can then be used to visualize how fundraiser creation has varied over the past years. 
+
+```{r recent-page-creation-e}
+covid_eff %>%
+    filter(created_date >= "2018-01-01") %>%
+    mutate(created_date = as.Date(created_date)) %>%
+    mutate(created_month = floor_date(created_date, "months")) %>%
+    group_by(created_month) %>%
+    summarise(number = n()) %>%
+    ggplot(aes(x = created_month, y = number)) + geom_point(size =1, shape=1, colour = "black") +
+    geom_line() + covid_dates_year + 
+    first_pull + xlab("Month") + ylab("Number of fundraisers created")
+```
+
+### Fundraisers for effective charities created in 2020 {.unnumbered}
+
+```{r}
+covid_eff %>%
+    filter(created_date >= "2020-01-01") %>%
+    mutate(created_date = as.Date(created_date)) %>%
+    mutate(created_week = floor_date(created_date, "weeks")) %>%
+    group_by(created_week) %>%
+    summarise(number = n()) %>%
+    ggplot(aes(x = created_week, y = number)) + geom_line() + xlab("Month") + ylab("Number of fundraisers created") + scale_x_date(date_breaks = "months", date_labels = ("%b")) + covid_dates_year
+```
+
+```{r comparing-years}
+covid_eff %>%
+    filter(created_date >= "2018-01-01") %>%
+    group_by(mo_created, yr_created) %>%
+    summarise(number = n()) %>%
+    ggplot(aes(x = mo_created, y = number, group = yr_created)) + geom_point(size =1, shape=1, colour = "black") +
+    geom_line(aes(x = mo_created, y = number, colour = yr_created)) + ylab("Number of fundraisers created") + xlab("Month") + labs(colour = "Year")
+```
+
+We can see a very large spike in fundraisers created during December 2018. By splitting fundraiser creation by charity we may be able to figure out what this spike came from:
+
+```{r}
+top4_charities <- covid_eff %>% group_by(charity_name) %>% summarise(number = n()) %>% slice_max(number, n = 4) %>% select(charity_name)
+covid_eff %>%
+    filter(created_date >= "2018-01-01") %>%
+    mutate(created_month = floor_date(created_date, "month")) %>%
+    filter(charity_name %in% top4_charities$charity_name) %>%
+    group_by(charity_name, created_month) %>%
+    summarise(number = n()) %>%
+    ggplot(aes(x = created_month, y = number)) + #geom_point(size =1, shape=1, colour = "black") +
+    geom_line(aes(x = created_month, y = number, colour = charity_name)) + labs(colour = "Charity") + 
+    ylab("Fundraisers Created") + xlab("")
+```
+
+Looking at the above graph we can see that the spike in fundraiser creation in December 2018 came from fundraisers raising money for WaterAid. It may be useful to investigate the reason for this spike by looking at the most frequent events in that month. \
+Note that we see a similar but less dramatic spike in December 2019. 
+
+```{r}
+covid_eff %>% 
+  mutate(created_month = floor_date(created_date, "month")) %>%
+  filter(created_month == "2018-12-01" & charity_name == "WaterAid") %>%
+  group_by(event_name) %>%
+  summarise(count = n()) %>% slice_max(count, n =4) %>%
+  kable(col.names = c("Event Name", "Count"), caption = "WaterAid events created in December 2018") %>%
+  kable_styling() %>%
+  scroll_box()
+```
+We see that the *Just Water 2019* event makes up for a considerable amount of the total fundraisers created in December 2018. If we look at December 2019 do we see this event dominating fundraiser creation again?
+
+```{r}
+covid_eff %>% 
+  mutate(created_month = floor_date(created_date, "month")) %>%
+  filter(created_month == "2019-12-01" & charity_name == "WaterAid") %>%
+  group_by(event_name) %>%
+  summarise(count = n()) %>% slice_max(count, n =4) %>%
+  kable(col.names = c("Event Name", "Count"), caption = "WaterAid events created in December 2019") %>%
+  kable_styling() %>%
+  scroll_box()
+```
+Indeed we do! Clearly this is a very popular event.
+
+### Which charities have been the most popular in terms of fundraiser creation {-}
+
+```{r most-pop-charities-e}
+covid_eff %>%
+  filter(is.na(charity_name)==FALSE) %>%
+  #filter(created_date >= as.Date("2018-01-01")) %>%
+  ggplot( aes(charity_name)) +
+  geom_bar(fill = "grey") +
+  coord_flip() +
+  labs(title = "Fundraiser creation by charity") + ylab("") + xlab("") +
+  ggtitle("Breakdown of fundraiser creation by charity") +
+       ylab("Number of fundraisers created") + xlab("") + scale_x_discrete(labels= function(charity_name) str_wrap(charity_name, width=30))
+```
+
+### Are the most popular charities the same for 2020? {.unnumbered}
+
+```{r most-pop-2020-e}
+covid_eff %>%
+  filter(is.na(charity_name)==FALSE) %>%
+  filter(created_date >= as.Date("2020-01-01")) %>%
+  ggplot( aes(charity_name)) +
+  geom_bar(fill = "grey") +
+  coord_flip() +
+  labs(title = "Breakdown of fundraiser creation by charity in 2020") + ylab("") + xlab("") + theme(plot.title = element_text(size=11)) + scale_x_discrete(labels= function(charity_name) str_wrap(charity_name, width=30))
+```
+
+The above table shows the breakdown of fundraisers which have been created in 2020 by charity. The majority of fundraisers created in our sample of effective charities were for WaterAid, Oxfam and Unicef UK. Which follows the pattern from previous years.
+
+### The state of monthly giving
+
+<!-- TODO: redo this part when the data has been filtered using pull_dur, this should remove the earlier years where there is little donation data -->
+
+```{r}
+don_per_month_eff %>%
+  filter(month >= "2018-01-01") %>%
+  ggplot(aes(x = month, y = amount)) +
+  xlab("Month") +
+  ggtitle("Total donations to effective charities per month") +
+  ylab("Total donations per month (\u00A3)" ) +
+  geom_point(fill = "37393A", pch= 21, colour = "37393A", size = 0.5) +
+  geom_line() + 
+  scale_x_date(date_breaks = "years", date_labels = ("%Y")) + covid_dates_year
+```
+
+<!-- Coronavirus dates -->
+
+It seems as if there have been a couple of spikes with donations, we can investigate the cause for these. Possible causes for these particular months having such a high amount of total donations could be: \* A large increase in the number of donations being made, potentially due to a particularly influential fundraising event \* A change in the donating behaviour of individuals (this is less likely)
+
+### Which charities were the most successful?
+
+```{r}
+covid_eff %>%
+    filter(created_date >= "2018-01-01") %>%
+    filter(charity_name %in% top4_charities$charity_name) %>%
+    mutate(created_month = floor_date(created_date, "month")) %>%
+    group_by(charity_name, created_month) %>%
+    summarise(total_raised = sum(total_raised)) %>%
+    ggplot(aes(x = created_month, y = total_raised)) + #geom_point(size =1, shape=1, colour = "black") +
+    geom_line(aes(x = created_month, y = total_raised, colour = charity_name)) + 
+    ggtitle("Total donations by charity") + ylab("Total raised £'s") + xlab("") +
+    labs(colour = "Charity") 
+## Change to calculate the donations from the donations dataframe
+```
+
+```{r}
+covid_eff %>%
+  filter(created_date >= "2018-01-01") %>%
+  group_by(charity_name) %>%
+  summarise(Total_raised = sum(total_raised),
+            Mean = mean(total_raised),
+            Median = median(total_raised)) %>%
+  arrange(desc(Total_raised)) %>% kable() %>%
+  kable_styling() %>%
+  scroll_box(height = "200px")
+```
+
+\
+
+```{=html}
+<!-- @Ben Grodeck @Oska Sheldon-Fentem : I forgot to mention in our conversation yesterday: I was probably previously  a bit too optimistic about the share of the pages on JG that were *not* affiliated with a public event. Taking a casual glance, many of these that are listed in  the `activityType = CharityAppeal` (16% of sample) turned out to often involve public events.
+
+This is not to say that there may not still be many fundraisers that were not associated with events, but it's a smaller percentage. We should look into other activityType’s such as “OtherCelebration” (10%) and ‘OtherPersonalChallenge’ (20%), and Birthday (5%). This could still leave a substantial number of fundraisers… And perhaps we could concentrate on birthdays, for example -->
+```
+<!--## Timelines
+
+## Appendix: Data Cleaning
+
+Issues:
+
+-   **Fixed** the original process for creating the dataframes with summary statistics such as covid_eff excluded pages which had no donations (around 15000). Obviously some of these pages will need to be removed anyway (see below), however, pages without donations may play an important role in analysis
+
+-   **Done** I think that fundraising_target is in native currency, which can be seen from running `fundraisers_all %>% filter(fundraising_target > target_amount) %>% select(currency_code, fundraising_target, target_amount) %>% View()`. Therefore we should switch the values of target_amount with fundraising_target. -->
+
+<!-- Note 'todor' package finds capital 'TODO' marks -->
+
+<!--TODO: reduce variable name lengths and move renaming to start of script-->
+
+<!--TODO: remove redundant variables created in combine_Covid_data -->
+
+<!--TODO: construct pull_dur for donations_all -->
+
+<!-- -   **Currency:** More issues with currency codes. `grand_total_raised` is in local currency, may be useful to convert this to one standard currency, in fact this may mean that our donation data is more in line with fundraiser totals. The exchange rate (which we can gain insight on through the ratio of `donor_local_amount` and `amount`, by `donor_local_currency_code`) seems to be calculated on donation_date as the rate varies over time. I'm assuming that statistics like the grand total raised and total raised percentage are calculated by summing the converted (at the time of donation) amounts, meaning that there isn't one overall exchange rate. For now I will attempt to approximate an exchange rate, calculating this via the most recent data. This will allow me to convert summary values such as the total raised into one general currency, which should help reduce the distortionary effect.
+
+-   (potentially an issue) pages where the donation amount is anonymous, end up with sum_don = 0 whilst the total amount raised is above 0. There are also more generalized mismatches between the total amount raised (including gift aid) and sum_don. A solution to this could be to use a pages total amount raised (total raised excluding gift aid + total gift aid) in cases where: sum_don = 0 and count_don \> 0 or where total amount raised \> sum_don. Otherwise in cases where sum_don \>= total amount raised we can prefer sum_don
+
+    -   **Fixed** Count_don seemed to have a limit of 25. This turned out to be due to our filtering process: we filter out fundraiser and donation data to ensure that we have the most recent version of the pages we have downloaded. For example if we download a page with it's donations once in 2018 and then download this data again in 2019 we would prefer to have the most recent version.
+
+    -   **Fixed** the original process for creating the dataframes with summary statistics such as covid_eff excluded pages which had no donations (around 15000). Obviously some of these pages will need to be removed anyway (see below), however, pages without donations may play an important role in analysis
+
+    -   **Duplicate values** there are some duplicate observations where a person has created a fundraiser, perhaps in error, and then recreated this with the same page name. This has led to pages with total donations of 0 still existing in the data. (Potentially fixed although the fix is done by grouping pages by their owner and removing duplicate observations of eventName. This may be an issue if for example we have two Susan Smiths doing Dechox 2020.) However, this probably isn't too big of a problem.
+
+### Page Duration
+
+The variable download_dur measures the duration between the expiry date of a page and the date on which the page was downloaded. A summary of this variable shows that there are clearly outliers in the date variables used for construction of download_dur. Because we may have attrition due to pages expiring before they can be downloaded this means that older fundraisers may be under-represented in our data.
+
+## Appendix: Modelling
+
+### Selection Bias {#sel-bias}
+
+Our sample of fundraising pages and donations has been constructed from several data pulls from the JustGiving API. Due to the way in which data is stored in the API, it appears that the resulting structure of the data is truncated. This means that observations are excluded from the sample due to their characteristics. A common example of data truncation occurs when in Labour Economics. Suppose that a researcher would like to model wage dynamics given a sample of the working population's wages. This sample will suffer from selection bias due to those who are not currently in the labour market not being a part of the data. Therefore, the process which prevents these people entering the labour market also guides the selection process of observations into our sample.\
+
+The number of data pulls has increased more recently, as the use of a university server has allowed the pulls to be done automatically rather than manually. At the start of this project data pulls were sporadic because they had to be conducted manually. This means that we can be confident that the more recent and frequent data pulls ensure that we are receiving a legitimate sample of JustGiving pages. However, this cannot be said for our earlier data pulls. As the fundraising pages in our dataset have an expiry date, this expiry date will have prevented us from sampling pages which have already expired. Whilst pages with an expiry date \< the date on which they were first downloaded do exist, these account for a very small minority of pages (`r (sum(fdd_fd$expiry_date < fdd_fd$first_downloaded, na.rm = TRUE)/nrow(fdd_fd))*100`% to be precise).\
+This means that our complete sample is not a random sample of the population of fundraisers as a page's expiry date and duration between creation and expiry influence whether or not a page is selected to be in our sample due to selection bias. Due to how the data pulls have been conducted this selection bias is present only in the part of the sample which was pulled less recently. Therefore, the distribution of Y in our sample is going to be different to the distribution of Y in the overall population because of the selection effect which the duration of a page has. Hence, $P(Y|S = 1)\ne P(Y)$ Where S is a binary indicator for whether a page appears in the sample or not.\
+
+Our goal is to estimate whether the Covid-19 pandemic had a causal effect on donation behaviour. This can be observed by identifying whether the total donations raised by a page has increased or decreased due to Covid. Therefore we want to estimate the average treatment effect (ATE) $E[Y^{A=1}]-E[Y^{A=0}]$ where $E[Y^{A=1}]$ is the mean of total raised given that every page was created during the Covid pandemic. $E[Y^{A=0}]$ is the mean total raised given that every page was not created during the Covid pandemic.\
+In a typical randomised control experiment (RCT) environment we would be able to estimate the ATE by calculating $E[Y|A=1] - E[Y|A=0]$ as the randomisation of treatment ensures that both the control and treatment group are balanced in terms of characteristics which may affect our outcome variable. However, the treatment and control groups in our sample differ in terms of page duration. This is because page which appear in our sample tend to be pages which have a longer duration.\
+In order to correctly estimate the ATE our treatment and control groups need to be balanced in terms of duration and expiry date. As a part of our control group suffers from a form of selection bias, we need to make sure that our treatment group suffers from the same selection bias which in turn should balance the characteristics of both groups and allow for us to observe the ATE.\
+
+```{r}
+# theme_set(theme_dag())
+# dagify(Y ~ Z,
+# 			S ~ Z) %>%
+#   ggdag()
+#TODO: Tidy this up & add reference (Greene 2007)
+```
+<!--
+## Inverse Probability Weighting
+-->
+```{r Estimate the probability of inclusion}
+#We use a logistic regression to estimate the probability of inclusion given the variables
+#Note: How are we defining treatment?
+#Source: https://www.coursera.org/lecture/crash-course-in-causality/data-example-in-r-Ie48W
+# library(survey)
+# ps_model <- glm(uk_lockdown ~ expiry_dur, data = covid_eff, family = binomial)
+# 
+# #Because we have selection bias in the untreated population this differs from the typical selection bias correction via IPW where selection bias is in the treatment group. Therefore, we switch the weighting calculation round: 1/prob for non-treated rather than treated
+# covid_eff <- covid_eff %>% 
+#   mutate(prob = predict(ps_model, type = "response"),
+#          weight = if_else(uk_lockdown==0,1/(prob), 1/(1-prob)))
+# We see that the correlation between a pages duration and it's assigned weight is `r cor(covid_eff$weight, covid_eff$expiry_dur)` which indicates that pages which have a longer duration have a higher weight.
+```
+<!-- <https://www.scielo.br/scielo.php?script=sci_arttext&pid=S2531-04882019000400508> 
+
+Before considering issues caused by the data collection process, it is worth discussing the specification by which we model this data. If we want to use a proportional specification then we are unable to use standard Least Squares estimation due to the problem posed in (Add log of gravity paper). We may want to use a proportional specification due to the fact that our dependent variable (total_raised) is positively skewed.
+
+Poisson Pseudo-Maximum Likelihood (PPML) - includes observations for which the Y value is 0 - is consistent as a PML estimator regardless of how the data is distributed - performs well in datasets with large number of 0s - Dummy variables should be numeric (0,1) if using a PPML model, source: <https://cran.r-project.org/web/packages/gravity/vignettes/crash-course-on-gravity-models.html>
+
+Source: Alternative Gravity Model Estimators
+
+Zero-inflated Binomial Regression: -The variable *total_raised* is over-dispersed, which may mean this model performs better
+
+```{r}
+
+#### Recipe for Poisson Pseudo-Maximum Likelihood estimator ####
+# ppml_rec <- recipe(total_raised ~ ., data = covid_eff) %>% 
+#   step_rm(contains(remove)) %>%
+#   step_unorder(all_predictors()) %>%
+#   step_dummy(all_predictors(), -all_numeric())
+# 
+# trained_rec <- prep(ppml_rec)
+# 
+# covid_eff_final <- bake(trained_rec, covid_eff)
+
+#Poisson PML estimator
+#model <- glm(total_raised ~ ., family =  quasipoisson(link="log"), data = covid_eff_final) #https://stat.ethz.ch/pipermail/r-help/2015-October/432988.html
+
+
+```
+-->
